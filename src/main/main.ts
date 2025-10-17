@@ -1,4 +1,4 @@
-/* eslint global-require: off, no-console: off, promise/always-return: off */
+/* eslint global-require: off, no-console: off, promise/always-return: off, @typescript-eslint/no-require-imports: off */
 
 /**
  * This module executes inside of electron's main process. You can start
@@ -8,53 +8,72 @@
  * When running `npm run build` or `npm run build:main`, this file is compiled to
  * `./src/main.js` using webpack. This gives us some performance wins.
  */
+
 import path from 'path';
+
 import { app, BrowserWindow, shell, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from 'electron-log';
-import MenuBuilder from './menu';
+
 import { resolveHtmlPath } from './util';
 
 class AppUpdater {
   constructor() {
     log.transports.file.level = 'info';
     autoUpdater.logger = log;
-    autoUpdater.checkForUpdatesAndNotify();
+    // Promise を明示的に破棄
+    void autoUpdater.checkForUpdatesAndNotify();
   }
 }
 
 let mainWindow: BrowserWindow | null = null;
 
-ipcMain.on('ipc-example', async (event, arg) => {
+// 受け取り引数に型付け（no-unsafe-argument 回避）
+ipcMain.on('ipc-example', (event, arg: string) => {
   const msgTemplate = (pingPong: string) => `IPC test: ${pingPong}`;
   console.log(msgTemplate(arg));
   event.reply('ipc-example', msgTemplate('pong'));
 });
 
-if (process.env.NODE_ENV === 'production') {
-  const sourceMapSupport = require('source-map-support');
-  sourceMapSupport.install();
-}
-
 const isDebug =
   process.env.NODE_ENV === 'development' || process.env.DEBUG_PROD === 'true';
 
-if (isDebug) {
-  require('electron-debug').default();
+// ── ESM/CJS 警告を避けるため require をやめて動的 import に統一 ──
+if (process.env.NODE_ENV === 'production') {
+  void import('source-map-support')
+    .then((m) => m.install())
+    .catch(() => {});
 }
 
-const installExtensions = async () => {
-  const installer = require('electron-devtools-installer');
-  const forceDownload = !!process.env.UPGRADE_EXTENSIONS;
-  const extensions = ['REACT_DEVELOPER_TOOLS'];
+if (isDebug) {
+  void import('electron-debug')
+    .then((m) => m.default())
+    .catch(() => {});
+}
 
-  return installer
-    .default(
-      extensions.map((name) => installer[name]),
-      forceDownload,
-    )
-    .catch(console.log);
+// DevTools 拡張導入（正しいオーバーロード：配列 + options）
+const installExtensions = async () => {
+  try {
+    // まず unknown にしてから、期待する“モジュール形”へキャスト
+    type Installer = typeof import('electron-devtools-installer');
+    type InstallFn = Installer['default'];
+
+    const mod = (await import('electron-devtools-installer')) as unknown as {
+      default: InstallFn;
+      REACT_DEVELOPER_TOOLS: Installer['REACT_DEVELOPER_TOOLS'];
+    };
+
+    const forceDownload = !!process.env.UPGRADE_EXTENSIONS;
+
+    // 正しいオーバーロード（配列 + options）
+    await mod.default([mod.REACT_DEVELOPER_TOOLS], { forceDownload });
+  } catch (e: unknown) {
+    if (e instanceof Error) console.log(e.message);
+    else console.log(String(e));
+  }
 };
+
+
 
 const createWindow = async () => {
   if (isDebug) {
@@ -81,7 +100,8 @@ const createWindow = async () => {
     },
   });
 
-  mainWindow.loadURL(resolveHtmlPath('index.html'));
+  // Promise 戻りを破棄
+  void mainWindow.loadURL(resolveHtmlPath('index.html'));
 
   mainWindow.on('ready-to-show', () => {
     if (!mainWindow) {
@@ -98,17 +118,12 @@ const createWindow = async () => {
     mainWindow = null;
   });
 
-  const menuBuilder = new MenuBuilder(mainWindow);
-  menuBuilder.buildMenu();
-
-  // Open urls in the user's browser
+  // 外部リンクは既定ブラウザで開く（Promise 破棄）
   mainWindow.webContents.setWindowOpenHandler((edata) => {
-    shell.openExternal(edata.url);
+    void shell.openExternal(edata.url);
     return { action: 'deny' };
   });
 
-  // Remove this if your app does not use auto updates
-  // eslint-disable-next-line
   new AppUpdater();
 };
 
@@ -117,21 +132,21 @@ const createWindow = async () => {
  */
 
 app.on('window-all-closed', () => {
-  // Respect the OSX convention of having the application in memory even
-  // after all windows have been closed
+  // macOS: 明示終了するまで常駐
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-app
+void app
   .whenReady()
   .then(() => {
-    createWindow();
+    void createWindow();
     app.on('activate', () => {
-      // On macOS it's common to re-create a window in the app when the
-      // dock icon is clicked and there are no other windows open.
-      if (mainWindow === null) createWindow();
+      if (mainWindow === null) void createWindow();
     });
   })
-  .catch(console.log);
+  .catch((e: unknown) => {
+    if (e instanceof Error) console.log(e.message);
+    else console.log(String(e));
+  });
